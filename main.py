@@ -262,7 +262,10 @@ def _filter_sticky_restorable_roles(
         role = guild.get_role(int(role_id))
         if role is None:
             continue
-        is_protected = bool(role.permissions & PROTECTED_PERMISSIONS) or role.id in PROTECTED_ROLE_IDS
+        is_protected = (
+            bool(role.permissions & PROTECTED_PERMISSIONS)
+            or role.id in PROTECTED_ROLE_IDS
+        )
         if role.is_managed or is_protected:
             continue
         roles.append(role)
@@ -556,7 +559,11 @@ async def member_lock(state: RolesState, member_id: int) -> AsyncGenerator[None,
         return
 
     cutoff = now - datetime.timedelta(hours=1)
-    state.member_role_locks = {mid: data for mid, data in state.member_role_locks.items() if data["last_used"] > cutoff}
+    state.member_role_locks = {
+        mid: data
+        for mid, data in state.member_role_locks.items()
+        if data["last_used"] > cutoff
+    }
 
 
 async def _update_member_roles(
@@ -583,7 +590,10 @@ async def _update_member_roles(
             return False
 
         refreshed_roles = {int(role_id) for role_id in refreshed.role_ids}
-        return int(add_role.id) in refreshed_roles and int(remove_role.id) not in refreshed_roles
+        return (
+            int(add_role.id) in refreshed_roles
+            and int(remove_role.id) not in refreshed_roles
+        )
     except Exception:
         logger.exception("Failed to update role state for member %s", member.id)
         return False
@@ -701,12 +711,15 @@ async def process_rejection(
     if (
         not is_appr_forum
         and thread_approvals.last_approval_time is not None
-        and (_utcnow() - thread_approvals.last_approval_time).total_seconds() > REJECTION_WINDOW_DAYS * 86400
+        and (_utcnow() - thread_approvals.last_approval_time).total_seconds()
+        > REJECTION_WINDOW_DAYS * 86400
     ):
         await reply_err(
             state.app,
             ctx,
-            (f"Failed to reject {member.mention} - rejection window expired after {REJECTION_WINDOW_DAYS} days"),
+            (
+                f"Failed to reject {member.mention} - rejection window expired after {REJECTION_WINDOW_DAYS} days"
+            ),
         )
         return "Failed to reject - rejection window closed"
 
@@ -792,7 +805,11 @@ async def process_status(
 
         is_appr_forum = channel.parent_id == APPR_VETTING_FORUM_ID
         roles = _resolve_workflow_roles(guild, is_appr_forum=is_appr_forum)
-        if roles["required"] is None or roles["target"] is None or roles["fallback"] is None:
+        if (
+            roles["required"] is None
+            or roles["target"] is None
+            or roles["fallback"] is None
+        ):
             await reply_err(
                 state.app,
                 ctx,
@@ -836,7 +853,12 @@ async def process_status(
 
     if isinstance(ctx, miru.ViewContext) and ctx.message is not None:
         try:
-            await ctx.edit_response(embed=embed, components=ctx.view)
+            await ctx.edit_response(
+                embed=embed,
+                components=ctx.view.build()
+                if ctx.view is not None
+                else hikari.UNDEFINED,
+            )
         except Exception:
             logger.exception(
                 "Failed to update approval message for thread %s",
@@ -912,13 +934,16 @@ async def cmd_servant_view(ctx: arc.GatewayContext) -> None:
     filtered_roles = tuple(
         role
         for role in sorted_roles[:divider_idx]
-        if not role.name.startswith(("——", "══")) and (role.bot_id is None or role.is_managed)
+        if not role.name.startswith(("——", "══"))
+        and (role.bot_id is None or role.is_managed)
     )
     if not filtered_roles:
         await reply_err(state.app, ctx, "Failed to find matching roles")
         return
 
-    role_to_members: dict[int, list[str]] = {int(role.id): [] for role in filtered_roles}
+    role_to_members: dict[int, list[str]] = {
+        int(role.id): [] for role in filtered_roles
+    }
     async for member in state.app.rest.fetch_members(GUILD_ID):
         for role_id in member.role_ids:
             role_members = role_to_members.get(int(role_id))
@@ -1060,6 +1085,7 @@ def load(client: arc.GatewayClient) -> None:
 @arc.unloader
 def unload(client: arc.GatewayClient) -> None:
     global _state
+    global env
     client.remove_plugin(plugin)
 
     state = _state
@@ -1067,6 +1093,7 @@ def unload(client: arc.GatewayClient) -> None:
         return
 
     database.close()
+    env = None
     _state = None
 
 
