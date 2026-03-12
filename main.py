@@ -5,11 +5,11 @@ import contextlib
 import dataclasses
 import datetime
 import pathlib
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Final, TypedDict
 
 import arc
 import hikari
-import lmdb
+import typing
 import miru
 from miru.ext import nav
 from src.container.app import get_miru
@@ -21,7 +21,7 @@ from src.shared.persistence.repository import (
     list_mapping_records,
     put_mapping_record,
 )
-from src.shared.persistence.store import Store
+from src.shared.persistence.store import LmdbEnvironment, Msgpack, Store
 from src.shared.utils.view import (
     Color,
     defer,
@@ -35,21 +35,21 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import AsyncGenerator, Iterable, Sequence
 
-ELECT_VETTING_FORUM_ID: int = 1164834982737489930
-APPR_VETTING_FORUM_ID: int = 1307001955230552075
-ELECTORAL_ROLE_ID: int = 1200043628899356702
-APPROVED_ROLE_ID: int = 1282944839679344721
-TEMPORARY_ROLE_ID: int = 1164761892015833129
-REQUIRED_APPROVALS: int = 3
-REQUIRED_REJECTIONS: int = 3
-REJECTION_WINDOW_DAYS: int = 7
-DIVIDER_CONTAINS: str = "[]"
-BASE_DIR: pathlib.Path = pathlib.Path(__file__).parent
-DB_PATH: pathlib.Path = BASE_DIR / "roles"
-DB_MAP_SIZE: int = 50 * 1024 * 1024
-DB_STICKY_ROLE: str = "sticky_role"
-DBS: tuple[str, ...] = (DB_STICKY_ROLE,)
-PROTECTED_PERMISSIONS: hikari.Permissions = (
+ELECT_VETTING_FORUM_ID: Final[int] = 1164834982737489930
+APPR_VETTING_FORUM_ID: Final[int] = 1307001955230552075
+ELECTORAL_ROLE_ID: Final[int] = 1200043628899356702
+APPROVED_ROLE_ID: Final[int] = 1282944839679344721
+TEMPORARY_ROLE_ID: Final[int] = 1164761892015833129
+REQUIRED_APPROVALS: Final[int] = 3
+REQUIRED_REJECTIONS: Final[int] = 3
+REJECTION_WINDOW_DAYS: Final[int] = 7
+DIVIDER_CONTAINS: Final[str] = "[]"
+BASE_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent
+DB_PATH: Final[pathlib.Path] = BASE_DIR / "roles"
+DB_MAP_SIZE: Final[int] = 50 * 1024 * 1024
+DB_STICKY_ROLE: Final[str] = "sticky_role"
+DBS: Final[tuple[str, ...]] = (DB_STICKY_ROLE,)
+PROTECTED_PERMISSIONS: Final[hikari.Permissions] = (
     hikari.Permissions.ADMINISTRATOR
     | hikari.Permissions.KICK_MEMBERS
     | hikari.Permissions.BAN_MEMBERS
@@ -61,7 +61,7 @@ PROTECTED_PERMISSIONS: hikari.Permissions = (
     | hikari.Permissions.MANAGE_GUILD_EXPRESSIONS
     | hikari.Permissions.MANAGE_THREADS
 )
-PROTECTED_ROLE_IDS: frozenset[int] = frozenset(
+PROTECTED_ROLE_IDS: Final[frozenset[int]] = frozenset(
     {
         ELECTORAL_ROLE_ID,
         APPROVED_ROLE_ID,
@@ -109,7 +109,7 @@ class BaseDB:
         raise NotImplementedError
 
     @classmethod
-    def get_databases(cls, env: lmdb.Environment | None) -> list[dict[str, Any]]:
+    def get_databases(cls, env: LmdbEnvironment | None) -> list[dict[str, Any]]:
         return list_mapping_records(
             env,
             database,
@@ -118,7 +118,7 @@ class BaseDB:
         )
 
     @classmethod
-    def delete(cls, env: lmdb.Environment | None, key: bytes) -> bool:
+    def delete(cls, env: LmdbEnvironment | None, key: bytes) -> bool:
         return delete_record(env, database, cls.get_database(), key)
 
 
@@ -157,7 +157,7 @@ class StickyRoleDB(BaseDB):
     @classmethod
     def get_member(
         cls,
-        env: lmdb.Environment | None,
+        env: LmdbEnvironment | None,
         member_id: int,
     ) -> StickyRoleRecord | None:
         key = str(member_id).encode("utf-8")
@@ -173,21 +173,21 @@ class StickyRoleDB(BaseDB):
         return cls._normalize_member_record(payload)
 
     @classmethod
-    def get_databases(cls, env: lmdb.Environment | None) -> list[dict[str, Any]]:
+    def get_databases(cls, env: LmdbEnvironment | None) -> list[dict[str, Any]]:
         return BaseDB.get_databases(env)
 
     @classmethod
     def upsert_member(
         cls,
-        env: lmdb.Environment | None,
+        env: LmdbEnvironment | None,
         member_id: int,
         role_ids: list[int],
         updated_at: str,
     ) -> None:
-        payload = {
-            "member_id": member_id,
-            "role_ids": role_ids,
-            "updated_at": updated_at,
+        payload: dict[str, Msgpack] = {
+            "member_id": int(member_id),
+            "role_ids": typing.cast("list[Msgpack]", [int(rid) for rid in role_ids]),
+            "updated_at": str(updated_at),
         }
         put_mapping_record(
             env,
@@ -198,12 +198,12 @@ class StickyRoleDB(BaseDB):
         )
 
     @classmethod
-    def delete_member(cls, env: lmdb.Environment | None, member_id: int) -> bool:
+    def delete_member(cls, env: LmdbEnvironment | None, member_id: int) -> bool:
         return BaseDB.delete(env, str(member_id).encode("utf-8"))
 
 
 database.open()
-env: lmdb.Environment | None = database.env
+env: LmdbEnvironment | None = database.env
 
 
 class RolesState:
@@ -306,7 +306,7 @@ def _approval_title(guild: hikari.Guild | None, is_appr_forum: bool) -> str:
 def _format_reviewers(reviewers: frozenset[int] | set[int]) -> str:
     if not reviewers:
         return "No reviewers"
-    return ",".join(f"<@{reviewer_id}>" for reviewer_id in sorted(reviewers))
+    return ", ".join(f"<@{reviewer_id}>" for reviewer_id in sorted(reviewers))
 
 
 async def _build_vote_embed(
@@ -344,7 +344,7 @@ async def delete_data(state: RolesState, key: str) -> bool:
         return False
     try:
         deleted = StickyRoleDB.delete_member(env, member_id)
-    except lmdb.Error:
+    except Exception:
         logger.exception("Failed to delete %s from LMDB", key)
         raise
     if deleted:
@@ -396,7 +396,7 @@ async def write_data(state: RolesState, data: StickyPayload) -> None:
                 continue
             if member_id not in desired_ids:
                 StickyRoleDB.delete_member(env, member_id)
-    except (TypeError, ValueError, lmdb.Error):
+    except (TypeError, ValueError, Exception):
         logger.exception("Failed to write sticky roles payload")
         raise
 
@@ -558,7 +558,7 @@ async def member_lock(state: RolesState, member_id: int) -> AsyncGenerator[None,
     if lock.locked():
         return
 
-    cutoff = now - datetime.timedelta(hours=1)
+    cutoff = _utcnow() - datetime.timedelta(hours=1)
     state.member_role_locks = {
         mid: data
         for mid, data in state.member_role_locks.items()
@@ -647,7 +647,7 @@ async def process_approval(
             (
                 f"Registering approval for {member.mention}. "
                 f"Status: {updated_approvals.approval_count}/{required_approvals} approvals. "
-                f"Waiting for {remaining} more approvals.",
+                f"Waiting for {remaining} more approvals."
             ),
         )
         return "Registering approval"
@@ -740,7 +740,7 @@ async def process_rejection(
             (
                 f"Registering rejection for {member.mention}. "
                 f"Status: {updated_approvals.rejection_count}/{required_rejections} rejections. "
-                f"Waiting for {remaining} more rejections.",
+                f"Waiting for {remaining} more rejections."
             ),
         )
         return "Registering rejection"
@@ -950,20 +950,28 @@ async def cmd_servant_view(ctx: arc.GatewayContext) -> None:
             if role_members is not None:
                 role_members.append(member.mention)
 
-    role_members_list = [
-        {
-            "role_name": role.name,
-            "members": mentions,
-            "member_count": len(mentions),
-        }
-        for role in filtered_roles
-        if (mentions := role_to_members[int(role.id)])
-    ]
+    role_members_list: list[dict[str, object]] = []
+    for role in filtered_roles:
+        mentions = role_to_members[int(role.id)]
+        if not mentions:
+            continue
+        role_members_list.append(
+            {
+                "role_name": role.name,
+                "members": list(mentions),
+                "member_count": len(mentions),
+            },
+        )
     if not role_members_list:
         await reply_err(state.app, ctx, "Failed to find matching roles")
         return
 
-    total_members = sum(item["member_count"] for item in role_members_list)
+    total_members = sum(
+        count
+        for item in role_members_list
+        if isinstance(item, dict)
+        and isinstance((count := item.get("member_count")), int)
+    )
     title = f"Servant Directory ({total_members} members)"
 
     embeds: list[hikari.Embed] = []
@@ -976,9 +984,12 @@ async def cmd_servant_view(ctx: arc.GatewayContext) -> None:
             current_embed = await reply_embed(state.app, title=title, ctx=ctx)
             field_count = 0
 
+        members_value = role_data.get("members")
+        if not isinstance(members_value, list):
+            continue
         current_embed.add_field(
             name=f"{role_data['role_name']} ({role_data['member_count']} members)",
-            value="\n".join(role_data["members"]),
+            value="\n".join(str(member) for member in members_value),
             inline=True,
         )
         field_count += 1
